@@ -11,10 +11,12 @@ def connect_db():
     """Establishes a connection to the SQLite database."""
     return sqlite3.connect(DB_FILE)
 
-def create_table():
-    """Creates the games table if it doesn't already exist."""
+def create_tables():
+    """Creates the games and kingdom_cards tables if they don't already exist."""
     conn = connect_db()
     cursor = conn.cursor()
+
+    # Table for game records
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS games (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,8 +29,87 @@ def create_table():
             notes TEXT
         )
     ''')
+
+    # Table for all known Kingdom Cards
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS all_kingdom_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_name TEXT UNIQUE NOT NULL
+            -- You could add more fields here like:
+            -- cost INTEGER,
+            -- card_type TEXT,
+            -- expansion TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
+
+def seed_kingdom_cards():
+    """Populates the all_kingdom_cards table with initial card names if it's empty."""
+    # This is a sample list. YOU SHOULD EXPAND THIS with all cards you own!
+    initial_cards = [
+        "Cellar", "Chapel", "Moat", "Chancellor", "Village", "Woodcutter",
+        "Workshop", "Bureaucrat", "Feast", "Garden", "Militia", "Moneylender",
+        "Remodel", "Smithy", "Spy", "Thief", "Throne Room", "Council Room",
+        "Festival", "Laboratory", "Library", "Market", "Mine", "Witch",
+        "Venture", "Curse", "Estate", "Duchy", "Province", "Copper", "Silver",
+        "Gold", "Platinum", "Colony", # Base set + Prosperity for example
+        "Artisan", "Bandit", "Harbinger", "Merchant", "Sentry", "Vassal", # 2nd Edition Base
+        "Poacher", "Guide", "Warlord", # New cards from various editions/expansions
+        "Duke", "Great Hall", "Nobles", "Baron", "Harem", "King's Court", # Intrigue
+        "Gardens", # Base 1st ed, same as Garden in 2nd ed, for robustness
+        # Add many more cards here from your expansions!
+        "Native Village", "Pearl Diver", "Fishing Village", "Lighthouse", # Seaside
+        "Tactician", "Warehouse", "Embassy", "Smugglers", "Salvager", # Seaside
+        "Goons", "Bank", "Loan", "Mint", "Mountebank", "Quarry", "Rabble", # Prosperity
+        "Grand Market", "Count", "Dame Anna", "Sir Martin" # More diverse
+    ]
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    # Check if the table is empty
+    cursor.execute("SELECT COUNT(*) FROM all_kingdom_cards")
+    if cursor.fetchone()[0] == 0:
+        print("Seeding initial Kingdom Cards...")
+        for card_name in sorted(initial_cards): # Sort for consistent insertion order
+            try:
+                cursor.execute("INSERT INTO all_kingdom_cards (card_name) VALUES (?)", (card_name,))
+            except sqlite3.IntegrityError:
+                # This handles cases where a card might be duplicated in initial_cards list
+                pass
+        conn.commit()
+        print(f"Seeded {len(initial_cards)} cards.")
+    else:
+        print("Kingdom Cards table already populated.")
+    conn.close()
+
+def add_kingdom_card(card_name):
+    """Adds a single kingdom card to the all_kingdom_cards table."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO all_kingdom_cards (card_name) VALUES (?)", (card_name,))
+        conn.commit()
+        print(f"'{card_name}' added to known Kingdom Cards. ✅")
+        return True
+    except sqlite3.IntegrityError:
+        print(f"'{card_name}' already exists in known Kingdom Cards. ℹ️")
+        return False
+    except sqlite3.Error as e:
+        print(f"Error adding card: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_all_known_kingdom_cards():
+    """Retrieves all card names from the all_kingdom_cards table."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT card_name FROM all_kingdom_cards ORDER BY card_name")
+    cards = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return cards
 
 # --- Helper Functions ---
 
@@ -36,7 +117,6 @@ def record_game():
     """Prompts the user for game details and records them in the database."""
     print("\n--- Record New Dominion Game ---")
     
-    # Auto-generate date
     game_date = datetime.now().strftime("%Y-%m-%d")
     print(f"Date: {game_date}")
     
@@ -71,12 +151,25 @@ def record_game():
         print("Error: Invalid score format. Please ensure scores are integers.")
         return
     
+    # --- Kingdom Card Validation ---
+    known_cards = get_all_known_kingdom_cards()
+    print("\nAvailable Kingdom Cards:")
+    print(", ".join(known_cards) if known_cards else "No cards in database. Add them using option 5.")
+
     kingdom_cards_input = input("Enter Kingdom Cards used (comma-separated): ")
-    kingdom_cards = [c.strip() for c in kingdom_cards_input.split(',') if c.strip()]
-    if not kingdom_cards:
-        print("Error: At least one Kingdom Card is required.")
-        return
+    entered_kingdom_cards = [c.strip() for c in kingdom_cards_input.split(',') if c.strip()]
     
+    validated_kingdom_cards = []
+    for card in entered_kingdom_cards:
+        if card in known_cards:
+            validated_kingdom_cards.append(card)
+        else:
+            print(f"Warning: '{card}' is not a recognized Kingdom Card. Please ensure correct spelling or add it to the database via option 5.")
+    
+    if not validated_kingdom_cards:
+        print("Error: No valid Kingdom Cards entered. Game not recorded.")
+        return
+
     expansions_input = input("Enter Expansions used (comma-separated, leave blank if none): ")
     expansions = [e.strip() for e in expansions_input.split(',') if e.strip()] if expansions_input else []
     
@@ -94,7 +187,7 @@ def record_game():
             ';'.join(players),
             ';'.join(winners),
             ';'.join([f"{k}:{v}" for k, v in scores_dict.items()]),
-            ';'.join(kingdom_cards),
+            ';'.join(validated_kingdom_cards), # Use validated cards
             ';'.join(expansions),
             notes
         ))
@@ -117,7 +210,6 @@ def load_game_data():
     for row in rows:
         game_id, game_date, players_str, winners_str, scores_str, kingdom_cards_str, expansions_str, notes = row
         
-        # Convert string representations back to lists/dicts
         players = players_str.split(';') if players_str else []
         winners = winners_str.split(';') if winners_str else []
         
@@ -214,18 +306,48 @@ def view_player_stats():
         print(f"  Highest Score: {player_max_score[player]}")
         print("-" * 30)
 
+def manage_kingdom_cards():
+    """Menu for managing known Kingdom Cards."""
+    while True:
+        print("\n--- Manage Kingdom Cards ---")
+        print("1. View All Known Cards 📄")
+        print("2. Add New Card 💪")
+        print("3. Back to Main Menu 🔙")
+
+        choice = input("Enter your choice: ")
+        if choice == '1':
+            cards = get_all_known_kingdom_cards()
+            if cards:
+                print("\n--- Known Kingdom Cards ---")
+                for card in cards:
+                    print(f"- {card}")
+            else:
+                print("No Kingdom Cards found. Add some!")
+        elif choice == '2':
+            new_card = input("Enter the name of the new Kingdom Card to add: ").strip()
+            if new_card:
+                add_kingdom_card(new_card)
+            else:
+                print("Card name cannot be empty.")
+        elif choice == '3':
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
 # --- Main Program Loop ---
 
 def main():
     """Main function to run the Dominion stats tracker."""
-    create_table() # Ensure the database table exists when the script starts
+    create_tables() # Ensure both database tables exist
+    seed_kingdom_cards() # Populate initial cards if table is empty
     
     while True:
         print("\n=== Dominion Stats Tracker (SQLite) ===")
         print("1. Record New Game ✍️")
         print("2. View All Games 📖")
         print("3. View Player Statistics 🏆")
-        print("4. Exit 🚪")
+        print("4. Manage Kingdom Cards 🃏") # New menu option
+        print("5. Exit 🚪")
         
         choice = input("Enter your choice: ")
         
@@ -236,6 +358,8 @@ def main():
         elif choice == '3':
             view_player_stats()
         elif choice == '4':
+            manage_kingdom_cards() # Call the new management function
+        elif choice == '5':
             print("Exiting Dominion Stats Tracker. Happy gaming! 👋")
             break
         else:
